@@ -2,6 +2,8 @@
 
 **A hyper-casual vertical space shooter for Android, built in Unity.** Steer the ship, blast meteors, collect stars and stack power-ups, then spend your stars in the shop on new ships, shot types and backgrounds.
 
+**[▶ Play the browser prototype](https://essanchez-13.github.io/AstroDash/)**
+
 **Stack:** Unity 6 (URP, 2D) · C# · TextMesh Pro · Android (min SDK 26)
 
 The game started as a single-file HTML5 Canvas prototype (`index.html`, playable in any browser) to nail the game feel quickly. It was then ported to Unity for mobile.
@@ -29,7 +31,7 @@ licenses/                      font licenses (SIL OFL)
 
 ## Running
 
-Open the `AstroDash/` folder with **Unity 6000.5** and load `Assets/Scenes/Main.unity`. To try the original prototype, open `index.html` in a browser.
+Open the `AstroDash/` folder with **Unity 6000.5** and load `Assets/Scenes/Main.unity`. To try the original prototype, [play it online](https://essanchez-13.github.io/AstroDash/) or open `index.html` in a browser.
 
 ---
 
