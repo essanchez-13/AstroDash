@@ -1,0 +1,57 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b21fc5bea2eaf584ab09b4c00f434dc5, type: 3}
+  m_Name: GameConfig
+  m_EditorClassIdentifier: Assembly-CSharp::GameConfig
+  playerSpeed: 10.4
+  followSharpness: 14
+  fireInterval: 0.28
+  bulletSpeed: 12.4
+  meteorSpawnStart: 1
+  meteorSpawnMin: 0.35
+  meteorSpeedMin: 2.4
+  meteorSpeedMax: 4.8
+  meteorDriftMax: 0.8
+  smallChance: 0.45
+  redChance: 0.4
+  smallSizeMin: 0.5
+  smallSizeMax: 0.75
+  bigSizeMin: 0.9
+  bigSizeMax: 1.25
+  itemSpawnMin: 2.2
+  itemSpawnMax: 4
+  itemFallSpeed: 2.6
+  itemSwayAmplitude: 0.6
+  itemSwayFrequency: 2.5
+  scoreMeteor: 10
+  scoreItem: 25
+  difficultyRamp: 60
+  meteorSpeedRamp: 0.6
+  powerUpDuration: 7
+  powerUpSpawnMin: 8
+  powerUpSpawnMax: 14
+  powerUpFallSpeed: 3
+  powerUpSize: 0.55
+  rapidRateMult: 0.5
+  doubleShotOffset: 0.18
+  magnetRadius: 3
+  magnetPull: 14
+  shieldWorldMult: 1.4
+  shieldStarsMult: 2.2
+  shieldWarnTime: 3
+  bigBulletScale: 2.2
+  bigBulletDamage: 2
+  carrierSpawnMin: 12
+  carrierSpawnMax: 20
+  carrierHp: 3
+  carrierScale: 1.45
+  unlockAllForTesting: 0

@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ASTRO DASH — Prototipo</title>
+<style>
+  /* ============================================================
+     UI MINIMALISTA
+     - Fondo oscuro uniforme, sin bordes ni decoración.
+     - Una sola tipografía de sistema, sin imágenes externas.
+     - El canvas se centra y escala manteniendo su proporción.
+     ============================================================ */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    background: #070b14;               /* casi negro, azul profundo */
+    overflow: hidden;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    /* Evita gestos del navegador (scroll/zoom) al jugar en móvil */
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  canvas {
+    display: block;
+    /* El tamaño real lo asigna JS para respetar la proporción 9:16 */
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<script>
+"use strict";
+
+/* ==================================================================
+   ASTRO DASH — Prototipo hipercasual de scroll vertical
+   ------------------------------------------------------------------
+   Todo el juego vive en un "mundo lógico" de 420 x 740 unidades
+   (proporción ~9:16, típica de móvil en vertical). El canvas se
+   escala a la pantalla real, así la lógica nunca depende de la
+   resolución del dispositivo.
+   ================================================================== */
+
+// ----------------------- CONFIGURACIÓN ---------------------------
+const WORLD = { w: 420, h: 740 };      // dimensiones lógicas del mundo
+
+const CONFIG = {
+  // Nave del jugador
+  playerSpeed: 520,        // velocidad máx. horizontal (unidades/seg)
+  playerRadius: 16,        // radio de colisión de la nave
+  playerY: WORLD.h - 90,   // altura fija de la nave (parte inferior)
+
+  // Disparo automático
+  fireInterval: 0.28,      // segundos entre disparos
+  bulletSpeed: 620,
+  bulletRadius: 4,
+
+  // Meteoritos (obstáculos)
+  meteorSpawnStart: 1.0,   // intervalo inicial entre meteoritos (seg)
+  meteorSpawnMin: 0.35,    // intervalo mínimo (dificultad máxima)
+  meteorSpeedMin: 120,
+  meteorSpeedMax: 240,
+  meteorRadiusMin: 14,
+  meteorRadiusMax: 30,
+
+  // Ítems galácticos (coleccionables)
+  itemSpawnMin: 2.2,       // el ítem aparece cada 2.2–4 segundos
+  itemSpawnMax: 4.0,
+  itemSpeed: 130,
+  itemRadius: 11,
+
+  // Puntuación
+  scoreMeteor: 10,         // puntos por destruir un meteorito
+  scoreItem: 25,           // puntos por recolectar un ítem
+
+  // Dificultad: cada segundo de partida acelera un poco el juego
+  difficultyRamp: 60,      // segundos para llegar a dificultad máxima
+
+  // Power-ups (todos ACUMULABLES: repetir un tipo suma duración,
+  // y tipos distintos funcionan simultáneamente)
+  powerUps: {
+    duration: 7,           // segundos que añade cada recogida
+    spawnMin: 8,           // aparece uno cada 8–14 segundos
+    spawnMax: 14,
+    fallSpeed: 150,
+    radius: 15,            // radio de colisión para recogerlo
+    warnTime: 3,           // últimos segundos: el escudo parpadea
+    worldSpeedMult: 1.4,   // escudo = turbo: el mundo baja más rápido
+    starsSpeedMult: 2.2,   // ...y el fondo aún más (sensación de velocidad)
+    rapidRateMult: 0.5,    // el disparo rápido reduce el intervalo a la mitad
+    doubleOffset: 9,       // separación lateral del disparo doble
+    magnetRadius: 150,     // alcance del imán
+    magnetPull: 700,       // velocidad de atracción de los ítems
+    bigRadius: 9,          // radio del proyectil de Potencia
+    bigDamage: 2,          // daño del proyectil de Potencia
+  },
+
+  // Meteorito PORTADOR: rojo, con halo del color del power-up que
+  // lleva dentro; aguanta 3 impactos y al romperse suelta la cápsula
+  carrier: {
+    spawnMin: 12,          // aparece uno cada 12–20 segundos
+    spawnMax: 20,
+    hp: 3,
+    radius: 26,
+  },
+};
+
+/* Catálogo de power-ups: letra que se dibuja dentro de la cápsula,
+   color identificativo (hex y rgb para gradientes). Las claves son
+   también las claves del objeto `power` con los temporizadores. */
+const POWERUP_TYPES = {
+  shield: { letter: "E", color: "#22d3ee", rgb: "34,211,238" },   // Escudo embestidor
+  magnet: { letter: "I", color: "#a78bfa", rgb: "167,139,250" },  // Imán de estrellas
+  double: { letter: "2", color: "#f472b6", rgb: "244,114,182" },  // Disparo doble
+  rapid:  { letter: "R", color: "#fb923c", rgb: "251,146,60" },   // Disparo rápido
+  big:    { letter: "P", color: "#4ade80", rgb: "74,222,128" },   // Potencia (bala grande)
+};
+const POWERUP_KEYS = Object.keys(POWERUP_TYPES);
+
+// Paleta limpia y moderna (todos los colores del juego viven aquí)
+const COLORS = {
+  bg:        "#070b14",
+  star:      "rgba(255,255,255,0.35)",
+  ship:      "#22d3ee",   // cian
+  shipGlow:  "rgba(34,211,238,0.25)",
+  bullet:    "#e2e8f0",
+  meteor:    "#94a3b8",   // gris azulado
+  meteorHot: "#f87171",   // meteoritos grandes (2 impactos)
+  item:      "#fbbf24",   // dorado
+  text:      "#e2e8f0",
+  textDim:   "#64748b",
+};
+
+// ----------------------- CANVAS Y ESCALADO ------------------------
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+let viewScale = 1; // factor mundo → píxeles reales (para convertir el input)
+
+// Ajusta el canvas a la ventana conservando la proporción del mundo.
+// Se dibuja siempre en coordenadas del mundo gracias a setTransform.
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  viewScale = Math.min(innerWidth / WORLD.w, innerHeight / WORLD.h);
+  canvas.style.width  = WORLD.w * viewScale + "px";
+  canvas.style.height = WORLD.h * viewScale + "px";
+  canvas.width  = Math.round(WORLD.w * viewScale * dpr);
+  canvas.height = Math.round(WORLD.h * viewScale * dpr);
+  ctx.setTransform(viewScale * dpr, 0, 0, viewScale * dpr, 0, 0);
+}
+addEventListener("resize", resize);
+resize();
+
+// ----------------------- UTILIDADES ------------------------------
+// Número aleatorio en el rango [min, max)
+const rand = (min, max) => min + Math.random() * (max - min);
+
+/* COLISIÓN CÍRCULO–CÍRCULO
+   Dos círculos chocan si la distancia entre sus centros es menor
+   que la suma de sus radios. Comparamos distancias AL CUADRADO
+   para evitar la raíz cuadrada (más rápido y mismo resultado). */
+function circlesCollide(ax, ay, ar, bx, by, br) {
+  const dx = ax - bx;
+  const dy = ay - by;
+  const rr = ar + br;
+  return dx * dx + dy * dy < rr * rr;
+}
+
+// ----------------------- ESTADO DEL JUEGO ------------------------
+const STATE = { START: 0, PLAYING: 1, GAMEOVER: 2 };
+let state = STATE.START;
+
+let score = 0;
+let best = Number(localStorage.getItem("astrodash_best") || 0);
+let elapsed = 0;          // segundos de partida (controla la dificultad)
+
+// Entidades (arrays de objetos simples; sin clases para mantenerlo ligero)
+const player  = { x: WORLD.w / 2, targetX: WORLD.w / 2 };
+let bullets   = [];   // { x, y }
+let meteors   = [];   // { x, y, r, vy, vx, hp, rot, vrot, shape[] }
+let items     = [];   // { x, y, baseX, t }  (t anima el vaivén y el giro)
+let powerups  = [];   // { x, y, t, type }  (type = clave de POWERUP_TYPES)
+let particles = [];   // { x, y, vx, vy, life, color }  (explosiones)
+
+/* Temporizadores de power-ups activos (segundos restantes de cada uno).
+   ACUMULABLES: recoger uno del mismo tipo SUMA duración al contador,
+   y varios tipos distintos pueden estar activos a la vez. */
+const power = { shield: 0, magnet: 0, double: 0, rapid: 0 };
+
+// Temporizadores de aparición y disparo
+let fireTimer = 0;
+let meteorTimer = 0;
+let itemTimer = rand(CONFIG.itemSpawnMin, CONFIG.itemSpawnMax);
+let powerUpTimer = rand(CONFIG.powerUps.spawnMin, CONFIG.powerUps.spawnMax);
+let carrierTimer = rand(CONFIG.carrier.spawnMin, CONFIG.carrier.spawnMax);
+
+// Fondo: estrellas fijas generadas una sola vez (parallax simple)
+const bgStars = Array.from({ length: 60 }, () => ({
+  x: rand(0, WORLD.w),
+  y: rand(0, WORLD.h),
+  r: rand(0.5, 1.8),
+  speed: rand(15, 50),   // las más "cercanas" caen más rápido
+}));
+
+// Reinicia todas las variables para empezar una partida nueva
+function startGame() {
+  score = 0;
+  elapsed = 0;
+  bullets = [];
+  meteors = [];
+  items = [];
+  powerups = [];
+  particles = [];
+  for (const k of POWERUP_KEYS) power[k] = 0;   // limpiar power-ups activos
+  fireTimer = 0;
+  meteorTimer = 0;
+  itemTimer = rand(CONFIG.itemSpawnMin, CONFIG.itemSpawnMax);
+  powerUpTimer = rand(CONFIG.powerUps.spawnMin, CONFIG.powerUps.spawnMax);
+  carrierTimer = rand(CONFIG.carrier.spawnMin, CONFIG.carrier.spawnMax);
+  player.x = player.targetX = WORLD.w / 2;
+  state = STATE.PLAYING;
+}
+
+// ----------------------- ENTRADA (INPUT) -------------------------
+/* Control táctil / ratón: la nave persigue suavemente la posición
+   horizontal del dedo o el cursor. Es el control estándar de los
+   juegos hipercasuales: un solo dedo, sin botones. */
+function pointerToWorldX(clientX) {
+  const rect = canvas.getBoundingClientRect();
+  return (clientX - rect.left) / viewScale; // píxeles → unidades de mundo
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  if (state !== STATE.PLAYING) { startGame(); return; }
+  player.targetX = pointerToWorldX(e.clientX);
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (e.buttons > 0 || e.pointerType === "touch") {
+    player.targetX = pointerToWorldX(e.clientX);
+  }
+});
+
+// Control por teclado (útil para probar en escritorio)
+const keys = {};
+addEventListener("keydown", (e) => {
+  keys[e.key] = true;
+  if (state !== STATE.PLAYING && (e.key === " " || e.key === "Enter")) startGame();
+});
+addEventListener("keyup", (e) => { keys[e.key] = false; });
+
+// ----------------------- GENERACIÓN ALEATORIA --------------------
+/* METEORITOS
+   - Aparecen justo encima del borde superior, en una X aleatoria.
+   - Radio, velocidad de caída, deriva lateral y rotación aleatorios.
+   - Los grandes (r >= 24) aguantan 2 impactos y se pintan en rojo.
+   - "shape" es un polígono irregular pre-generado (variaciones del
+     radio por vértice) para que cada roca se vea única, aunque la
+     COLISIÓN se calcula siempre como un círculo de radio r. */
+// Cráteres decorativos pre-generados (ángulo, distancia al centro, radio)
+function makeCraters(r) {
+  return Array.from({ length: 3 }, () => ({
+    a: rand(0, Math.PI * 2),
+    d: rand(0.15, 0.55) * r,
+    cr: rand(0.14, 0.28) * r,
+  }));
+}
+
+function spawnMeteor() {
+  const r = rand(CONFIG.meteorRadiusMin, CONFIG.meteorRadiusMax);
+  const difficulty = Math.min(elapsed / CONFIG.difficultyRamp, 1); // 0 → 1
+  const vertices = 8;
+  const shape = Array.from({ length: vertices }, () => rand(0.75, 1.15));
+  meteors.push({
+    x: rand(r, WORLD.w - r),
+    y: -r,
+    r,
+    vy: rand(CONFIG.meteorSpeedMin, CONFIG.meteorSpeedMax) * (1 + difficulty * 0.6),
+    vx: rand(-40, 40),                 // deriva lateral leve
+    hp: r >= 24 ? 2 : 1,
+    rot: rand(0, Math.PI * 2),
+    vrot: rand(-1.5, 1.5),
+    shape,
+    craters: makeCraters(r),
+    carrier: false,
+  });
+}
+
+/* METEORITO PORTADOR: lleva un power-up dentro (tipo aleatorio).
+   Se distingue por su halo pulsante DEL COLOR del power-up que
+   contiene, aguanta 3 impactos y al romperse suelta la cápsula. */
+function spawnCarrier() {
+  const r = CONFIG.carrier.radius;
+  const vertices = 8;
+  meteors.push({
+    x: rand(r + 20, WORLD.w - r - 20),
+    y: -r,
+    r,
+    vy: rand(CONFIG.meteorSpeedMin, CONFIG.meteorSpeedMax) * 0.9, // algo más lento
+    vx: rand(-30, 30),
+    hp: CONFIG.carrier.hp,
+    rot: rand(0, Math.PI * 2),
+    vrot: rand(-1, 1),
+    shape: Array.from({ length: vertices }, () => rand(0.8, 1.12)),
+    craters: makeCraters(r),
+    carrier: true,
+    carrierType: POWERUP_KEYS[Math.floor(Math.random() * POWERUP_KEYS.length)],
+  });
+}
+
+/* ÍTEMS GALÁCTICOS
+   Estrellas doradas que caen despacio con un vaivén sinusoidal
+   (baseX + seno del tiempo). Recogerlas suma puntos; no dañan. */
+function spawnItem() {
+  const margin = 40;
+  items.push({
+    baseX: rand(margin, WORLD.w - margin),
+    x: 0,
+    y: -CONFIG.itemRadius,
+    t: rand(0, Math.PI * 2),   // fase inicial aleatoria del vaivén
+  });
+}
+
+/* POWER-UPS
+   Caen en línea recta desde arriba, con un tipo elegido al azar del
+   catálogo. Son deliberadamente más lentos que los meteoritos para
+   que el jugador pueda decidir si le compensa ir a por ellos. */
+function spawnPowerUp() {
+  const margin = 30;
+  powerups.push({
+    x: rand(margin, WORLD.w - margin),
+    y: -20,
+    t: rand(0, Math.PI * 2),   // fase del balanceo decorativo
+    type: POWERUP_KEYS[Math.floor(Math.random() * POWERUP_KEYS.length)],
+  });
+}
+
+// Pequeña explosión de partículas (feedback visual al destruir/recoger)
+function burst(x, y, color, count = 12) {
+  for (let i = 0; i < count; i++) {
+    const angle = rand(0, Math.PI * 2);
+    const speed = rand(40, 220);
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: rand(0.25, 0.6),
+      color,
+    });
+  }
+}
+
+// ----------------------- ACTUALIZACIÓN (UPDATE) ------------------
+/* Un "tick" de simulación. dt = segundos transcurridos desde el
+   frame anterior; multiplicar por dt hace que el juego corra igual
+   a 30, 60 o 120 FPS. */
+function update(dt) {
+  // -- Fondo (se anima incluso en los menús; con el turbo del escudo
+  //    las estrellas pasan mucho más rápido = sensación de velocidad) --
+  const starsMult = (state === STATE.PLAYING && power.shield > 0)
+    ? CONFIG.powerUps.starsSpeedMult : 1;
+  for (const s of bgStars) {
+    s.y += s.speed * starsMult * dt;
+    if (s.y > WORLD.h) { s.y = 0; s.x = rand(0, WORLD.w); }
+  }
+
+  // -- Partículas (viven en cualquier estado para animar el game over) --
+  for (const p of particles) {
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.life -= dt;
+  }
+  particles = particles.filter((p) => p.life > 0);
+
+  if (state !== STATE.PLAYING) return;
+  elapsed += dt;
+  const difficulty = Math.min(elapsed / CONFIG.difficultyRamp, 1);
+
+  // -- Cuenta atrás de los power-ups activos --
+  for (const k of POWERUP_KEYS) power[k] = Math.max(0, power[k] - dt);
+
+  /* ESCUDO = TURBO HACIA ADELANTE: el control lateral se queda normal,
+     pero todo el mundo (meteoritos, ítems, cápsulas y sus relojes de
+     aparición) corre más rápido → la nave "avanza" más deprisa. */
+  const worldMult = power.shield > 0 ? CONFIG.powerUps.worldSpeedMult : 1;
+
+  // -- Movimiento del jugador (lateral SIEMPRE a velocidad normal) --
+  if (keys["ArrowLeft"]  || keys["a"]) player.targetX -= CONFIG.playerSpeed * dt;
+  if (keys["ArrowRight"] || keys["d"]) player.targetX += CONFIG.playerSpeed * dt;
+  player.targetX = Math.max(20, Math.min(WORLD.w - 20, player.targetX));
+  // Interpolación suave hacia el objetivo (movimiento con "peso")
+  player.x += (player.targetX - player.x) * Math.min(1, dt * 14);
+
+  // -- Disparo automático (rápido = mitad de intervalo; doble = 2 balas;
+  //    Potencia = bala grande con doble daño, combinable con las demás) --
+  fireTimer -= dt;
+  if (fireTimer <= 0) {
+    fireTimer = CONFIG.fireInterval * (power.rapid > 0 ? CONFIG.powerUps.rapidRateMult : 1);
+    const big = power.big > 0;
+    if (power.double > 0) {
+      const off = CONFIG.powerUps.doubleOffset + (big ? 4 : 0);
+      bullets.push({ x: player.x - off, y: CONFIG.playerY - 20, big });
+      bullets.push({ x: player.x + off, y: CONFIG.playerY - 20, big });
+    } else {
+      bullets.push({ x: player.x, y: CONFIG.playerY - 20, big });
+    }
+  }
+  for (const b of bullets) b.y -= CONFIG.bulletSpeed * dt;
+  bullets = bullets.filter((b) => b.y > -10); // eliminar las que salen
+
+  // -- Aparición de meteoritos (el intervalo se acorta con el tiempo;
+  //    con el turbo del escudo el reloj también corre más rápido para
+  //    mantener la densidad de rocas) --
+  meteorTimer -= dt * worldMult;
+  if (meteorTimer <= 0) {
+    meteorTimer = CONFIG.meteorSpawnStart -
+      (CONFIG.meteorSpawnStart - CONFIG.meteorSpawnMin) * difficulty;
+    spawnMeteor();
+  }
+
+  // -- Meteorito portador: uno cada 12–20 segundos --
+  carrierTimer -= dt * worldMult;
+  if (carrierTimer <= 0) {
+    carrierTimer = rand(CONFIG.carrier.spawnMin, CONFIG.carrier.spawnMax);
+    spawnCarrier();
+  }
+
+  for (const m of meteors) {
+    m.y += m.vy * worldMult * dt;
+    m.x += m.vx * dt;
+    m.rot += m.vrot * dt;
+    // Rebote suave en los bordes laterales
+    if (m.x < m.r || m.x > WORLD.w - m.r) m.vx *= -1;
+  }
+  meteors = meteors.filter((m) => m.y < WORLD.h + m.r * 2); // salen por abajo
+
+  // -- Aparición y movimiento de ítems --
+  itemTimer -= dt;
+  if (itemTimer <= 0) {
+    itemTimer = rand(CONFIG.itemSpawnMin, CONFIG.itemSpawnMax);
+    spawnItem();
+  }
+  for (const it of items) {
+    it.t += dt;
+
+    /* IMÁN (corregido): cuando un ítem entra en el radio queda
+       "imantado" y vuela DIRECTO a la nave, sin el vaivén sinusoidal
+       — el vaivén era lo que lo desviaba a los lados justo antes de
+       recogerlo. Si el imán se acaba antes de llegar, retoma la caída
+       normal desde donde esté, sin saltos. */
+    if (power.magnet > 0) {
+      const dx = player.x - it.x;
+      const dy = CONFIG.playerY - it.y;
+      const dist = Math.hypot(dx, dy);
+      if (!it.magnet && dist < CONFIG.powerUps.magnetRadius) it.magnet = true;
+      if (it.magnet && dist > 1) {
+        const pull = Math.min(CONFIG.powerUps.magnetPull * dt, dist);
+        it.x += (dx / dist) * pull;
+        it.y += (dy / dist) * pull;
+        continue;   // este frame ya voló hacia la nave: sin vaivén
+      }
+    } else if (it.magnet) {
+      it.magnet = false;
+      // reancla el vaivén a la posición actual para que no dé un salto
+      it.baseX = it.x - Math.sin(it.t * 2.5) * 30;
+    }
+
+    it.y += CONFIG.itemSpeed * worldMult * dt;
+    it.x = it.baseX + Math.sin(it.t * 2.5) * 30; // vaivén lateral
+  }
+  items = items.filter((it) => it.y < WORLD.h + 20);
+
+  // -- Aparición y caída de power-ups --
+  powerUpTimer -= dt * worldMult;
+  if (powerUpTimer <= 0) {
+    powerUpTimer = rand(CONFIG.powerUps.spawnMin, CONFIG.powerUps.spawnMax);
+    spawnPowerUp();
+  }
+  for (const p of powerups) {
+    p.t += dt;
+    p.y += CONFIG.powerUps.fallSpeed * worldMult * dt;
+  }
+  powerups = powerups.filter((p) => p.y < WORLD.h + 30);
+
+  // ============================================================
+  // COLISIONES
+  // Todas usan círculos: es barato, estable y suficiente para
+  // un hipercasual. Recorremos los arrays hacia atrás para poder
+  // eliminar elementos con splice sin saltarnos índices.
+  // ============================================================
+
+  // 1) Proyectil vs meteorito (la bala de Potencia hace doble daño)
+  for (let i = meteors.length - 1; i >= 0; i--) {
+    const m = meteors[i];
+    for (let j = bullets.length - 1; j >= 0; j--) {
+      const b = bullets[j];
+      const bRad = b.big ? CONFIG.powerUps.bigRadius : CONFIG.bulletRadius;
+      if (circlesCollide(m.x, m.y, m.r, b.x, b.y, bRad)) {
+        bullets.splice(j, 1);          // el proyectil siempre se consume
+        m.hp -= b.big ? CONFIG.powerUps.bigDamage : 1;
+        if (m.hp <= 0) {
+          score += CONFIG.scoreMeteor;
+          burst(m.x, m.y, m.carrier ? POWERUP_TYPES[m.carrierType].color : COLORS.meteor);
+          // El PORTADOR suelta su power-up al romperse
+          if (m.carrier) powerups.push({ x: m.x, y: m.y, t: 0, type: m.carrierType });
+          meteors.splice(i, 1);
+        }
+        break; // este meteorito ya procesó un impacto este frame
+      }
+    }
+  }
+
+  // 2) Ítem vs jugador (recolección)
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (circlesCollide(it.x, it.y, CONFIG.itemRadius,
+                       player.x, CONFIG.playerY, CONFIG.playerRadius + 6)) {
+      score += CONFIG.scoreItem;
+      burst(it.x, it.y, COLORS.item, 16);
+      items.splice(i, 1);
+    }
+  }
+
+  // 3) Power-up vs jugador (recogida: SUMA duración — acumulable)
+  for (let i = powerups.length - 1; i >= 0; i--) {
+    const p = powerups[i];
+    if (circlesCollide(p.x, p.y, CONFIG.powerUps.radius,
+                       player.x, CONFIG.playerY, CONFIG.playerRadius + 6)) {
+      power[p.type] += CONFIG.powerUps.duration;
+      burst(p.x, p.y, POWERUP_TYPES[p.type].color, 16);
+      powerups.splice(i, 1);
+    }
+  }
+
+  // 4) Meteorito vs jugador
+  for (let i = meteors.length - 1; i >= 0; i--) {
+    const m = meteors[i];
+    /* Se usa un radio de colisión ligeramente MENOR que el visual
+       (0.8x) para que el juego se sienta justo: en hipercasuales
+       el jugador debe sentir que "casi" lo esquivó, no que un
+       roce invisible lo mató. */
+    if (circlesCollide(m.x, m.y, m.r * 0.8,
+                       player.x, CONFIG.playerY, CONFIG.playerRadius * 0.8)) {
+      if (power.shield > 0) {
+        // ESCUDO: la nave embiste y destruye el meteorito (con puntos);
+        // si era un portador, también suelta su power-up
+        score += CONFIG.scoreMeteor;
+        burst(m.x, m.y, COLORS.ship, 18);
+        if (m.carrier) powerups.push({ x: m.x, y: m.y, t: 0, type: m.carrierType });
+        meteors.splice(i, 1);
+        continue;
+      }
+      // Sin escudo: fin de la partida
+      burst(player.x, CONFIG.playerY, COLORS.ship, 24);
+      best = Math.max(best, score);
+      localStorage.setItem("astrodash_best", best);
+      state = STATE.GAMEOVER;
+      break;
+    }
+  }
+}
+
+// ----------------------- DIBUJADO (RENDER) -----------------------
+function drawShip(x, y) {
+  ctx.save();
+  ctx.translate(x, y);
+
+  // Estela del motor (con el turbo del escudo es el doble de larga)
+  const boost = power.shield > 0 ? 1.9 : 1;
+  const flame = (13 + Math.random() * 8) * boost;
+  const fg = ctx.createLinearGradient(0, 13, 0, 13 + flame);
+  fg.addColorStop(0, "rgba(253,224,71,0.95)");
+  fg.addColorStop(0.4, "rgba(251,146,60,0.55)");
+  fg.addColorStop(1, "rgba(251,146,60,0)");
+  ctx.fillStyle = fg;
+  ctx.beginPath();
+  ctx.moveTo(-5, 13);
+  ctx.lineTo(5, 13);
+  ctx.lineTo(0, 13 + flame);
+  ctx.closePath();
+  ctx.fill();
+
+  // Fuselaje con gradiente vertical y alas en flecha
+  const g = ctx.createLinearGradient(0, -22, 0, 14);
+  g.addColorStop(0, "#a5f3fc");
+  g.addColorStop(0.45, "#22d3ee");
+  g.addColorStop(1, "#0e7490");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.moveTo(0, -22);                     // nariz
+  ctx.quadraticCurveTo(5, -12, 6, -2);    // costado derecho
+  ctx.lineTo(17, 11);                     // punta del ala derecha
+  ctx.quadraticCurveTo(9, 8, 4, 9);       // borde interior del ala
+  ctx.quadraticCurveTo(2, 13, 0, 14);     // cola
+  ctx.quadraticCurveTo(-2, 13, -4, 9);
+  ctx.quadraticCurveTo(-9, 8, -17, 11);   // ala izquierda (espejo)
+  ctx.lineTo(-6, -2);
+  ctx.quadraticCurveTo(-5, -12, 0, -22);
+  ctx.closePath();
+  ctx.fill();
+
+  // Franja central oscura + cabina con reflejo
+  ctx.fillStyle = "rgba(8,47,73,0.5)";
+  ctx.beginPath();
+  ctx.ellipse(0, -5, 2.6, 7, 0, 0, Math.PI * 2);
+  ctx.fill();
+  const cg = ctx.createRadialGradient(-0.8, -9, 0.5, 0, -7, 4.5);
+  cg.addColorStop(0, "#f0f9ff");
+  cg.addColorStop(1, "#38bdf8");
+  ctx.fillStyle = cg;
+  ctx.beginPath();
+  ctx.ellipse(0, -7, 2, 3.8, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawMeteor(m) {
+  ctx.save();
+  ctx.translate(m.x, m.y);
+
+  // PORTADOR: halo pulsante del color del power-up que lleva dentro
+  if (m.carrier) {
+    const def = POWERUP_TYPES[m.carrierType];
+    const pulse = 0.35 + (Math.sin(performance.now() / 140) + 1) * 0.2;
+    const halo = ctx.createRadialGradient(0, 0, m.r * 0.5, 0, 0, m.r * 2);
+    halo.addColorStop(0, `rgba(${def.rgb},0)`);
+    halo.addColorStop(0.6, `rgba(${def.rgb},${pulse.toFixed(2)})`);
+    halo.addColorStop(1, `rgba(${def.rgb},0)`);
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(0, 0, m.r * 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.rotate(m.rot);
+
+  // Roca rellena con luz desde arriba-izquierda; roja si es dura
+  const hot = m.carrier || m.hp >= 2;
+  const pal = hot
+    ? ["#fca5a5", "#b91c1c", "#601414"]
+    : ["#e2e8f0", "#7c8ba1", "#3b4859"];
+  const rg = ctx.createRadialGradient(-m.r * 0.35, -m.r * 0.35, m.r * 0.15, 0, 0, m.r * 1.1);
+  rg.addColorStop(0, pal[0]);
+  rg.addColorStop(0.55, pal[1]);
+  rg.addColorStop(1, pal[2]);
+  ctx.fillStyle = rg;
+  ctx.beginPath();
+  const n = m.shape.length;
+  for (let i = 0; i < n; i++) {
+    const angle = (i / n) * Math.PI * 2;
+    const radius = m.r * m.shape[i];
+    const px = Math.cos(angle) * radius;
+    const py = Math.sin(angle) * radius;
+    i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fill();
+
+  // Cráteres (sombras circulares pre-generadas en el spawn)
+  ctx.fillStyle = "rgba(0,0,0,0.28)";
+  for (const c of m.craters) {
+    ctx.beginPath();
+    ctx.arc(Math.cos(c.a) * c.d, Math.sin(c.a) * c.d, c.cr, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Núcleo del portador: orbe brillante del color de su power-up
+  if (m.carrier) {
+    const def = POWERUP_TYPES[m.carrierType];
+    const core = ctx.createRadialGradient(0, 0, 1, 0, 0, m.r * 0.42);
+    core.addColorStop(0, "#ffffff");
+    core.addColorStop(0.5, def.color);
+    core.addColorStop(1, `rgba(${def.rgb},0)`);
+    ctx.fillStyle = core;
+    ctx.beginPath();
+    ctx.arc(0, 0, m.r * 0.42, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function drawItem(it) {
+  ctx.save();
+  ctx.translate(it.x, it.y);
+
+  // Halo dorado
+  const glow = ctx.createRadialGradient(0, 0, 1, 0, 0, 22);
+  glow.addColorStop(0, "rgba(251,191,36,0.45)");
+  glow.addColorStop(1, "rgba(251,191,36,0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(0, 0, 22, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Estrella de 4 puntas con gradiente (centro claro → borde ámbar)
+  ctx.rotate(it.t * 1.5);
+  const r = CONFIG.itemRadius;
+  const sg = ctx.createRadialGradient(0, 0, 1, 0, 0, r + 2);
+  sg.addColorStop(0, "#fef9c3");
+  sg.addColorStop(1, "#f59e0b");
+  ctx.fillStyle = sg;
+  ctx.beginPath();
+  ctx.moveTo(0, -r);
+  ctx.quadraticCurveTo(0, 0, r, 0);
+  ctx.quadraticCurveTo(0, 0, 0, r);
+  ctx.quadraticCurveTo(0, 0, -r, 0);
+  ctx.quadraticCurveTo(0, 0, 0, -r);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawPowerUp(p) {
+  // Cápsula pulida: halo, cuerpo del color del tipo con brillo
+  // superior, borde claro y letra oscura; balancea suavemente
+  const def = POWERUP_TYPES[p.type];
+  const bob = Math.sin(p.t * 3) * 3;
+  ctx.save();
+  ctx.translate(p.x, p.y + bob);
+
+  const glow = ctx.createRadialGradient(0, 0, 4, 0, 0, 26);
+  glow.addColorStop(0, `rgba(${def.rgb},0.4)`);
+  glow.addColorStop(1, `rgba(${def.rgb},0)`);
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(0, 0, 26, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = def.color;
+  ctx.beginPath();
+  ctx.roundRect(-14, -14, 28, 28, 9);
+  ctx.fill();
+
+  // Brillo superior (efecto de cristal)
+  const gloss = ctx.createLinearGradient(0, -14, 0, 4);
+  gloss.addColorStop(0, "rgba(255,255,255,0.55)");
+  gloss.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = gloss;
+  ctx.beginPath();
+  ctx.roundRect(-14, -14, 28, 28, 9);
+  ctx.fill();
+
+  ctx.strokeStyle = "rgba(255,255,255,0.8)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.roundRect(-14, -14, 28, 28, 9);
+  ctx.stroke();
+
+  ctx.fillStyle = "rgba(7,11,20,0.85)";
+  ctx.font = "800 15px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(def.letter, 0, 1);
+  ctx.restore();
+  ctx.textBaseline = "alphabetic";      // restaurar el valor por defecto
+}
+
+// Aura pulsante alrededor de la nave mientras el escudo está activo
+function drawShieldRing(x, y) {
+  const pulse = 1 + Math.sin(performance.now() / 90) * 0.06;
+  ctx.strokeStyle = COLORS.ship;
+  ctx.globalAlpha = 0.35 + Math.sin(performance.now() / 90) * 0.15;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(x, y, 30 * pulse, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+// Píldoras bajo el marcador con cada power-up activo y sus segundos
+function drawPowerUpHUD() {
+  const active = POWERUP_KEYS.filter((k) => power[k] > 0);
+  if (active.length === 0) return;
+  const w = 54, h = 22, gap = 8;
+  let x = WORLD.w / 2 - (active.length * w + (active.length - 1) * gap) / 2;
+  for (const k of active) {
+    const def = POWERUP_TYPES[k];
+    ctx.fillStyle = def.color + "26";
+    ctx.strokeStyle = def.color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(x, 88, w, h, 11);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = def.color;
+    ctx.font = "700 13px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(`${def.letter} ${Math.ceil(power[k])}`, x + w / 2, 88 + h / 2 + 1);
+    x += w + gap;
+  }
+  ctx.textBaseline = "alphabetic";
+}
+
+function drawCenteredText(text, y, size, color, weight = "600") {
+  ctx.fillStyle = color;
+  ctx.font = `${weight} ${size}px system-ui, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.fillText(text, WORLD.w / 2, y);
+}
+
+function render() {
+  // Fondo
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, WORLD.w, WORLD.h);
+
+  // Estrellas del fondo
+  ctx.fillStyle = COLORS.star;
+  for (const s of bgStars) {
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Partículas
+  for (const p of particles) {
+    ctx.globalAlpha = Math.max(0, p.life / 0.6);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
+  }
+  ctx.globalAlpha = 1;
+
+  if (state === STATE.PLAYING || state === STATE.GAMEOVER) {
+    // Proyectiles: núcleo blanco con halo; la bala de Potencia es un
+    // orbe verde grande y brillante
+    for (const b of bullets) {
+      if (b.big) {
+        const bg = ctx.createRadialGradient(b.x, b.y, 1, b.x, b.y, 15);
+        bg.addColorStop(0, "#ffffff");
+        bg.addColorStop(0.35, "#86efac");
+        bg.addColorStop(1, "rgba(74,222,128,0)");
+        ctx.fillStyle = bg;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, 15, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        const bg = ctx.createRadialGradient(b.x, b.y, 0.5, b.x, b.y, 9);
+        bg.addColorStop(0, "rgba(255,255,255,0.9)");
+        bg.addColorStop(0.5, "rgba(165,243,252,0.5)");
+        bg.addColorStop(1, "rgba(165,243,252,0)");
+        ctx.fillStyle = bg;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, 9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#f8fafc";
+        ctx.beginPath();
+        ctx.roundRect(b.x - 2, b.y - 7, 4, 14, 2);
+        ctx.fill();
+      }
+    }
+
+    for (const m of meteors) drawMeteor(m);
+    for (const it of items) drawItem(it);
+    for (const p of powerups) drawPowerUp(p);
+    if (state === STATE.PLAYING) {
+      drawShip(player.x, CONFIG.playerY);
+      // Aura del escudo: fija mientras dura; en los últimos segundos
+      // (warnTime) PARPADEA para avisar de que se va a acabar
+      const s = power.shield;
+      const visible = s > CONFIG.powerUps.warnTime ||
+                      Math.floor(performance.now() / 120) % 2 === 0;
+      if (s > 0 && visible) drawShieldRing(player.x, CONFIG.playerY);
+    }
+
+    // HUD minimalista: puntuación arriba y power-ups activos debajo
+    drawCenteredText(score, 70, 42, COLORS.text, "700");
+    if (state === STATE.PLAYING) drawPowerUpHUD();
+  }
+
+  if (state === STATE.START) {
+    drawShip(WORLD.w / 2, WORLD.h / 2 + 60);
+    drawCenteredText("ASTRO DASH", WORLD.h / 2 - 80, 44, COLORS.text, "800");
+    drawCenteredText("Arrastra para moverte · Disparo automático",
+                     WORLD.h / 2 - 30, 15, COLORS.textDim, "400");
+    drawCenteredText("Esquiva las rocas y atrapa las estrellas",
+                     WORLD.h / 2 - 6, 15, COLORS.textDim, "400");
+    if (best > 0) drawCenteredText("Récord: " + best, WORLD.h / 2 + 130, 16, COLORS.item);
+    drawCenteredText("TOCA PARA JUGAR", WORLD.h - 120, 20, COLORS.ship, "700");
+  }
+
+  if (state === STATE.GAMEOVER) {
+    // Velo oscuro sobre la escena congelada
+    ctx.fillStyle = "rgba(7,11,20,0.75)";
+    ctx.fillRect(0, 0, WORLD.w, WORLD.h);
+    drawCenteredText("FIN DEL VIAJE", WORLD.h / 2 - 60, 36, COLORS.text, "800");
+    drawCenteredText(score, WORLD.h / 2 + 10, 56, COLORS.ship, "700");
+    drawCenteredText("Récord: " + best, WORLD.h / 2 + 50, 18, COLORS.item);
+    drawCenteredText("TOCA PARA REINTENTAR", WORLD.h - 120, 20, COLORS.text, "700");
+  }
+}
+
+// ----------------------- BUCLE PRINCIPAL -------------------------
+/* Ciclo del juego con requestAnimationFrame:
+   1. Calcular dt (tiempo real entre frames, limitado a 50 ms para
+      que una pestaña en segundo plano no provoque saltos gigantes).
+   2. update(dt)  → simular física, spawns y colisiones.
+   3. render()    → dibujar el estado actual.
+   Separar update de render mantiene la lógica testeable y permite
+   migrarla después a cualquier motor (Unity usa el mismo patrón
+   con Update() por frame). */
+let lastTime = performance.now();
+function loop(now) {
+  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  lastTime = now;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* Ganchos de depuración para pruebas manuales desde la consola del
+   navegador (no afectan al juego normal). Ej.: DEBUG.give("shield") */
+window.DEBUG = {
+  startGame,
+  spawnPowerUp,
+  spawnCarrier,
+  give: (type) => { power[type] += CONFIG.powerUps.duration; },
+  get power() { return { ...power }; },
+  get counts() {
+    return { bullets: bullets.length, meteors: meteors.length,
+             items: items.length, powerups: powerups.length };
+  },
+  get score() { return score; },
+  get state() { return state; },
+  get meteorsRef() { return meteors; },   // acceso directo para pruebas
+  // Coloca un meteorito encima de la nave (probar escudo / game over)
+  crashTest: () => meteors.push({
+    x: player.x, y: CONFIG.playerY, r: 20, vy: 0, vx: 0,
+    hp: 1, rot: 0, vrot: 0, shape: [1, 1, 1, 1, 1, 1, 1, 1],
+  }),
+};
+</script>
+</body>
+</html>

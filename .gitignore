@@ -1,0 +1,55 @@
+# ---------- Unity: generated / per-machine ----------
+AstroDash/[Ll]ibrary/
+AstroDash/[Tt]emp/
+AstroDash/[Oo]bj/
+AstroDash/[Bb]uild/
+AstroDash/[Bb]uilds/
+AstroDash/[Ll]ogs/
+AstroDash/[Uu]ser[Ss]ettings/
+AstroDash/[Mm]emoryCaptures/
+AstroDash/[Rr]ecordings/
+AstroDash/Assets/AssetStoreTools*
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+*.pidb.meta
+*.pdb.meta
+*.mdb.meta
+sysinfo.txt
+crashlytics-build.properties
+.vs/
+.vscode/
+.idea/
+
+# ---------- Builds and signing (never public) ----------
+*.apk
+*.aab
+*.unitypackage
+*.keystore
+*.jks
+
+# ---------- Batch-workflow logs and diagnostics (local only) ----------
+/*.log
+/diag*.png
+
+# ---------- Stale staging copy (source of truth is AstroDash/Assets) ----------
+/unity/
+
+# ---------- Audio with third-party or unverified licenses ----------
+# Unity Asset Store package: its EULA does not allow redistributing source files
+AstroDash/Assets/ArcadeGameBGM#3/
+AstroDash/Assets/ArcadeGameBGM#3.meta
+# Music and SFX of unconfirmed origin
+AstroDash/Assets/Audio/
+AstroDash/Assets/Audio.meta
